@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: data-agent
+
+  # 应用自身的库（对话历史、执行轨迹，第二阶段启用 JPA 实体）
+  datasource:
+    url: jdbc:mysql://localhost:3307/dataagent?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: dataagent
+    password: dataagent123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+
+  ai:
+    dashscope:
+      # 只从环境变量读取，绝不写死进仓库；优先标准名 DASHSCOPE_API_KEY，回退到本机已有的 API-KEY
+      api-key: ${DASHSCOPE_API_KEY:${API-KEY:}}
+      chat:
+        options:
+          model: qwen-plus
+          temperature: 0.3
+
+# Agent 自定义配置
+agent:
+  max-rounds: 10          # ReAct 循环最大轮数，防止死循环烧 token
+  sql:
+    max-retries: 3        # SQL 报错自愈的最大重试次数
+    timeout-seconds: 10   # 单条查询超时
+    max-rows: 200         # 返回给模型的最大行数，防止撑爆上下文
+  # 业务库只读数据源：独立账号，数据库层面只有 biz 库的 SELECT 权限
+  biz-datasource:
+    url: jdbc:mysql://localhost:3307/biz?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: agent_ro
+    password: agent_ro123
+
+logging:
+  level:
+    com.yang.dataagent: DEBUG
