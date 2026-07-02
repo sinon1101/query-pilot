@@ -21,6 +21,9 @@ spring:
         options:
           model: qwen-plus
           temperature: 0.3
+      embedding:
+        options:
+          model: text-embedding-v4
 
 # Agent 自定义配置
 agent:
@@ -34,6 +37,13 @@ agent:
     url: jdbc:mysql://localhost:3307/biz?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: agent_ro
     password: agent_ro123
+  # schema/业务术语向量检索（Redis Stack @6380，端口错开本机另一项目）
+  rag:
+    redis-host: localhost
+    redis-port: 6380
+    top-k: 4              # schema_search 每次返回的文档数
+  memory:
+    window-size: 20       # 注入模型的历史消息条数上限（10 轮对话），防止上下文无限膨胀
 
 logging:
   level:
