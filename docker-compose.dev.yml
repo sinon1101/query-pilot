@@ -1,0 +1,41 @@
+# 日常开发环境：仅中间件（MySQL + Redis Stack），应用在 IDEA 里跑
+# 端口特意错开默认值（3307/6380），避免与本机 aics 项目的容器冲突
+services:
+  mysql:
+    # 用 8.0 而非更新版本：本机已有该镜像，Docker Hub 直连不稳定
+    image: mysql:8.0
+    container_name: dataagent-mysql
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: dataagent
+      MYSQL_USER: dataagent
+      MYSQL_PASSWORD: dataagent123
+      TZ: Asia/Shanghai
+    volumes:
+      - dataagent-mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    # redis-stack 带 RediSearch 模块（第二阶段向量检索用），本机已有该镜像
+    image: redis/redis-stack:latest
+    container_name: dataagent-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - dataagent-redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  dataagent-mysql-data:
+  dataagent-redis-data:
