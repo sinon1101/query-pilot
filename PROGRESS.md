@@ -7,14 +7,22 @@
 - [x] 2026-07-02 技术选型定稿（见 CLAUDE.md），Docker 环境清理，本地 git 仓库初始化
 - [x] 2026-07-02 GitHub 远程仓库建立并推送：https://github.com/sinon1101/data-analysis-agent （**当前私有**，项目成型后切换公开）
 
-## 第一阶段：最小闭环（一句话 → SQL → 查询结果）
+## 第一阶段：最小闭环（一句话 → SQL → 查询结果）✅ 2026-07-02 完成
 
-- [ ] Maven 骨架：pom.xml（Spring Boot 3.5 + Spring AI Alibaba + JPA + MySQL 驱动）
-- [ ] docker-compose.dev.yml（MySQL 3307 + Redis Stack 6380）+ 电商样例数据初始化 SQL
-- [ ] 接通百炼 qwen-plus（环境变量注入 API Key），写一个连通性冒烟测试
-- [ ] 手写 ReAct AgentExecutor：消息列表维护、tool call 解析分发、最大轮数控制
-- [ ] execute_sql 工具：只读校验、超时、行数限制、错误信息回传自愈（最多 3 轮）
-- [ ] 简单 REST 接口跑通端到端：POST 问题 → 返回 SQL + 查询结果
+- [x] Maven 骨架：Spring Boot 3.5.16 + Spring AI Alibaba 1.1.2.3（基于 Spring AI 1.1.2）+ JPA + MySQL 驱动
+  - 注意：1.1.x 的 spring-ai-alibaba-bom 不再管理 dashscope starter，版本需直接指定
+- [x] docker-compose.dev.yml（MySQL 8.0 @3307 + redis-stack @6380，复用本机已有镜像）+ 电商样例数据
+  - biz 库 4 张表（users/products/orders/order_items），300 用户 / 3000 订单 / 6000+ 明细
+  - 数据用固定种子 RAND(n) 生成、日期相对 NOW()，可复现且"上个月"类问题永远有数据
+  - 坑：init 脚本必须 `SET NAMES utf8mb4`，否则容器内 mysql client 按 latin1 执行，中文双重编码入库
+- [x] 接通百炼 qwen-plus + 冒烟测试（DashScopeSmokeTest，无 DASHSCOPE_API_KEY 时自动跳过）
+- [x] 手写 ReAct AgentExecutor：internalToolExecutionEnabled(false) 拿到原始 tool call 手动分发，
+  三重终止条件（模型收敛 / 最大 10 轮 / SQL 连续失败 3 次），每步记入 AgentStep 轨迹随响应返回
+- [x] execute_sql 工具三层防线：SqlGuard 校验（仅 SELECT/WITH、黑名单关键字、禁多语句注释，25 个单测）
+  + agent_ro 只读账号（数据库层仅 biz 库 SELECT 权限，已验证 UPDATE 被拒）+ 10s 超时 / 200 行截断
+- [x] POST /api/chat 端到端验证通过：
+  - "上个月哪个品类销售额最高" → 1 轮出正确 SQL → 手机数码 489,135.68 元（与手工查库一致）
+  - 三表 join（城市消费 Top3）✓；"把商品价格改成 1 元"被拒绝 ✓
 
 ## 第二阶段：RAG 与记忆
 
@@ -41,5 +49,8 @@
 
 ## 遗留事项 / 备忘
 
+- 本机百炼 Key 存在用户环境变量 `API-KEY`（非标准名），application.yml 已做回退兼容
+  `${DASHSCOPE_API_KEY:${API-KEY:}}`；建议手动补一个标准名变量：
+  `setx DASHSCOPE_API_KEY %API-KEY%`（新终端生效）
 - 项目成型后把 GitHub 仓库从私有切换为公开（简历需要）
 - gh CLI 安装在 `C:\Program Files\GitHub CLI\gh.exe`，新终端若提示找不到 gh 是 PATH 未刷新
