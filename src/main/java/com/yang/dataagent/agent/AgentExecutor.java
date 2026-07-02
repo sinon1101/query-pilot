@@ -48,8 +48,17 @@ public class AgentExecutor {
     }
 
     public AgentResult run(String question) {
+        return run(question, List.of());
+    }
+
+    /**
+     * @param history 已截断的历史对话（user/assistant 成对），注入在系统提示词之后、
+     *                本轮问题之前，供模型理解"那第二名呢"这类指代追问
+     */
+    public AgentResult run(String question, List<Message> history) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(AgentPrompts.SYSTEM_PROMPT));
+        messages.addAll(history);
         messages.add(new UserMessage(question));
 
         // 关键：internalToolExecutionEnabled(false) 让框架只把 tool call 透传出来，由本循环手动执行
