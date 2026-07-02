@@ -5,6 +5,7 @@
 ## 已完成
 
 - [x] 2026-07-02 技术选型定稿（见 CLAUDE.md），Docker 环境清理，本地 git 仓库初始化
+- [x] 2026-07-02 GitHub 远程仓库建立并推送：https://github.com/sinon1101/data-analysis-agent （**当前私有**，项目成型后切换公开）
 
 ## 第一阶段：最小闭环（一句话 → SQL → 查询结果）
 
@@ -31,5 +32,5 @@
 
 ## 遗留事项 / 备忘
 
-- gh CLI 已安装但需要用户执行 `gh auth login` 完成 GitHub 授权（若未完成）
-- GitHub 远程仓库待创建并推送
+- 项目成型后把 GitHub 仓库从私有切换为公开（简历需要）
+- gh CLI 安装在 `C:\Program Files\GitHub CLI\gh.exe`，新终端若提示找不到 gh 是 PATH 未刷新
