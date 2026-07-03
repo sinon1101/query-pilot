@@ -1,0 +1,12 @@
+# 容器内运行时的连接地址覆盖（docker-compose.yml 里 SPRING_PROFILES_ACTIVE=docker 激活）：
+# 走 compose 内部网络的服务名与容器内端口，其余配置沿用 application.yml
+spring:
+  datasource:
+    url: jdbc:mysql://mysql:3306/dataagent?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+
+agent:
+  biz-datasource:
+    url: jdbc:mysql://mysql:3306/biz?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+  rag:
+    redis-host: redis
+    redis-port: 6379

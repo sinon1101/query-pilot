@@ -1,0 +1,58 @@
+# 一键部署：应用 + MySQL + Redis Stack 三容器。
+#   DASHSCOPE_API_KEY=xxx docker compose up -d --build
+# 与 docker-compose.dev.yml（仅中间件，应用在 IDE 跑）二选一使用；
+# 两者共用容器名与数据卷，开发/部署模式切换时数据不丢。
+services:
+  app:
+    build: .
+    image: data-agent:latest
+    container_name: dataagent-app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # 只从宿主机环境变量透传，绝不写进文件
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置环境变量 DASHSCOPE_API_KEY（阿里云百炼 API Key）}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0
+    container_name: dataagent-mysql
+    # 宿主机端口错开 3306，避免与本机其它 MySQL 冲突；容器间走内部网络不受影响
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: dataagent
+      MYSQL_USER: dataagent
+      MYSQL_PASSWORD: dataagent123
+      TZ: Asia/Shanghai
+    volumes:
+      - dataagent-mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis/redis-stack:latest
+    container_name: dataagent-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - dataagent-redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  dataagent-mysql-data:
+  dataagent-redis-data:

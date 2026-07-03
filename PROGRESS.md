@@ -62,7 +62,12 @@
     打字机效果、执行轨迹面板（思考/工具行实时定稿）、ECharts 本地 vendor 渲染、SQL 折叠；
     无头 Edge 截图验证首页布局与 bar/pie 真实渲染
   - 顺手修复：收敛轮的最终回答不再重复记为 thought 步骤（轨迹重复 + 前端闪烁）
-- [ ] 全量 docker-compose.yml + 应用镜像多阶段构建，一键部署验证
+- [x] 2026-07-03 全量 docker-compose.yml + 应用镜像多阶段构建，一键部署验证通过：
+  - Dockerfile 两阶段：maven 打包（阿里云镜像源 + pom 先拷贝做依赖层缓存）→ 21-jre 运行
+  - docker-compose.yml 三容器，app 用 SPRING_PROFILES_ACTIVE=docker 切换容器内连接地址
+    （application-docker.yml），DASHSCOPE_API_KEY 从宿主机透传、缺失时 compose 直接报错拒启
+  - 与 dev compose 共用容器名/数据卷，开发与部署模式切换数据不丢
+  - 实测 `docker compose up -d --build` 后 /api/chat 问答正确
 - [ ] README（架构图、演示 GIF、快速开始）
 - [ ] 小评测集：统计 SQL 一次成功率 / 自愈后成功率（简历数据来源）
 
