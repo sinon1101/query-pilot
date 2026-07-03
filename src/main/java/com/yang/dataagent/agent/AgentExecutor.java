@@ -28,6 +28,9 @@ import java.util.List;
  * </pre>
  * 终止条件（三选一）：模型不再发起工具调用（正常收敛）、
  * 达到最大轮数、execute_sql 连续失败达重试上限。
+ * <p>
+ * 每轮模型调用走流式（{@link #streamOneRound}）：文本增量实时回调给
+ * {@link AgentEventListener}（SSE 打字机效果的数据源），tool call 分片手写聚合。
  */
 @Service
 public class AgentExecutor {
@@ -51,11 +54,16 @@ public class AgentExecutor {
         return run(question, List.of());
     }
 
-    /**
-     * @param history 已截断的历史对话（user/assistant 成对），注入在系统提示词之后、
-     *                本轮问题之前，供模型理解"那第二名呢"这类指代追问
-     */
     public AgentResult run(String question, List<Message> history) {
+        return run(question, history, AgentEventListener.NOOP);
+    }
+
+    /**
+     * @param history  已截断的历史对话（user/assistant 成对），注入在系统提示词之后、
+     *                 本轮问题之前，供模型理解"那第二名呢"这类指代追问
+     * @param listener 实时事件回调（文本增量 / 工具执行），SSE 流式输出的数据源
+     */
+    public AgentResult run(String question, List<Message> history, AgentEventListener listener) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(AgentPrompts.SYSTEM_PROMPT));
         messages.addAll(history);
@@ -74,11 +82,12 @@ public class AgentExecutor {
 
         for (int round = 1; round <= props.maxRounds(); round++) {
             log.debug("ReAct 第 {} 轮，消息数 {}", round, messages.size());
-            ChatResponse response = chatModel.call(new Prompt(messages, options));
-            AssistantMessage assistant = response.getResult().getOutput();
+            AssistantMessage assistant = streamOneRound(messages, options, round, listener);
 
             if (assistant.getText() != null && !assistant.getText().isBlank()) {
-                steps.add(AgentStep.thought(round, assistant.getText()));
+                AgentStep thought = AgentStep.thought(round, assistant.getText());
+                steps.add(thought);
+                listener.onStep(thought);
             }
 
             // 模型不再调用工具 => 收敛，文本即最终回答
@@ -91,9 +100,12 @@ public class AgentExecutor {
 
             for (AssistantMessage.ToolCall toolCall : assistant.getToolCalls()) {
                 log.info("第 {} 轮工具调用: {} args={}", round, toolCall.name(), toolCall.arguments());
+                listener.onToolCallStart(round, toolCall.name(), toolCall.arguments());
                 AgentTool.ToolOutput output = toolRegistry.dispatch(toolCall.name(), toolCall.arguments());
-                steps.add(AgentStep.toolCall(round, toolCall.name(), toolCall.arguments(),
-                        output.content(), output.error()));
+                AgentStep step = AgentStep.toolCall(round, toolCall.name(), toolCall.arguments(),
+                        output.content(), output.error());
+                steps.add(step);
+                listener.onStep(step);
                 toolResponses.add(new ToolResponseMessage.ToolResponse(
                         toolCall.id(), toolCall.name(), output.content()));
 
@@ -121,6 +133,53 @@ public class AgentExecutor {
         return new AgentResult(false,
                 "本次分析超过最大推理轮数（" + props.maxRounds() + "）仍未得出结论，已终止。请把问题拆小后重试。",
                 lastSql, lastQueryResult, steps);
+    }
+
+    /** tool call 聚合的中间态：arguments 可能分片到达，用 StringBuilder 续拼 */
+    private record ToolCallDraft(String id, String name, StringBuilder arguments) {
+    }
+
+    /**
+     * 流式消费一轮模型响应，聚合成完整的 AssistantMessage：
+     * 文本增量实时回调 listener 后拼接；tool call 按分片聚合——带 id 的分片开启
+     * 一个新调用，无 id 的分片把 arguments 续到上一个调用（OpenAI 风格增量协议）。
+     * 实测 DashScope 当前把 tool call 完整放在最后一个 chunk（退化为单分片），
+     * 但聚合逻辑按通用增量协议实现，两种形状都兼容。
+     */
+    private AssistantMessage streamOneRound(List<Message> messages, ToolCallingChatOptions options,
+                                            int round, AgentEventListener listener) {
+        StringBuilder text = new StringBuilder();
+        List<ToolCallDraft> drafts = new ArrayList<>();
+
+        // toIterable 阻塞消费 Flux：增量到达即处理，无需引入响应式编程模型
+        for (ChatResponse chunk : chatModel.stream(new Prompt(messages, options)).toIterable()) {
+            if (chunk.getResults().isEmpty() || chunk.getResult().getOutput() == null) {
+                continue;
+            }
+            AssistantMessage out = chunk.getResult().getOutput();
+            String delta = out.getText();
+            if (delta != null && !delta.isEmpty()) {
+                text.append(delta);
+                listener.onTextDelta(round, delta);
+            }
+            for (AssistantMessage.ToolCall tc : out.getToolCalls()) {
+                if (tc.id() != null && !tc.id().isBlank()) {
+                    drafts.add(new ToolCallDraft(tc.id(), tc.name(),
+                            new StringBuilder(nullToEmpty(tc.arguments()))));
+                } else if (!drafts.isEmpty()) {
+                    drafts.getLast().arguments().append(nullToEmpty(tc.arguments()));
+                }
+            }
+        }
+
+        List<AssistantMessage.ToolCall> toolCalls = drafts.stream()
+                .map(d -> new AssistantMessage.ToolCall(d.id(), "function", d.name(), d.arguments().toString()))
+                .toList();
+        return AssistantMessage.builder().content(text.toString()).toolCalls(toolCalls).build();
+    }
+
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
     }
 
     /** 从工具入参 JSON 里提取 sql 字段，仅用于结果展示，解析失败不影响主流程 */

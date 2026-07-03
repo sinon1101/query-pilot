@@ -45,7 +45,12 @@
 
 ## 第三阶段：呈现与部署
 
-- [ ] SSE 流式输出
+- [x] 2026-07-03 SSE 流式输出：AgentExecutor 每轮改走 chatModel.stream()，
+  文本增量实时回调 AgentEventListener（打字机数据源），tool call 分片手写聚合
+  （实测 DashScope 把 tool call 完整放在最后一个 chunk，聚合逻辑仍按 OpenAI 风格
+  增量协议实现以兼容两种形状）；POST /api/chat/stream（SseEmitter + 虚拟线程），
+  事件序列 meta → delta*n → tool/step*n → done，客户端断开不影响落库；
+  同步 /api/chat 保留（脚本/评测用）。端到端验证：首问 + 携带 conversationId 追问均正确
 - [ ] render_chart 工具 + 前端页面（聊天框 + ECharts + 执行轨迹面板）
 - [ ] 全量 docker-compose.yml + 应用镜像多阶段构建，一键部署验证
 - [ ] README（架构图、演示 GIF、快速开始）
