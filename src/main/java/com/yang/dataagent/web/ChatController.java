@@ -62,12 +62,13 @@ public class ChatController {
     }
 
     public record ChatResponse(String conversationId, Long traceId, boolean success,
-                               String answer, String sql, String queryResult, List<AgentStep> steps) {
+                               String answer, String sql, String queryResult, String chartOption,
+                               List<AgentStep> steps) {
     }
 
     /** done 事件的载荷。steps 已通过 step 事件逐条推送，这里不再重复 */
     public record StreamDone(String conversationId, Long traceId, boolean success,
-                             String answer, String sql, String queryResult) {
+                             String answer, String sql, String queryResult, String chartOption) {
     }
 
     @PostMapping("/chat")
@@ -85,7 +86,7 @@ public class ChatController {
         Long traceId = traceService.save(conversationId, question, result, durationMs);
 
         return new ChatResponse(conversationId, traceId, result.success(),
-                result.answer(), result.sql(), result.queryResult(), result.steps());
+                result.answer(), result.sql(), result.queryResult(), result.chartOption(), result.steps());
     }
 
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -108,7 +109,7 @@ public class ChatController {
                 Long traceId = traceService.save(conversationId, question, result, durationMs);
 
                 send(emitter, "done", new StreamDone(conversationId, traceId, result.success(),
-                        result.answer(), result.sql(), result.queryResult()));
+                        result.answer(), result.sql(), result.queryResult(), result.chartOption()));
                 emitter.complete();
             } catch (Exception e) {
                 log.error("SSE 对话处理失败", e);

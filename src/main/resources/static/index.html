@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataAgent · 智能数据分析</title>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="topbar">
+    <div class="topbar-inner">
+        <div class="brand">
+            <span class="brand-logo">📊</span>
+            <span class="brand-name">DataAgent</span>
+            <span class="brand-sub">自然语言 → SQL → 图表</span>
+        </div>
+        <button id="newChatBtn" class="btn-ghost" type="button">＋ 新对话</button>
+    </div>
+</header>
+
+<main id="chatArea" class="chat-area">
+    <div class="welcome" id="welcome">
+        <h1>问点数据相关的问题吧</h1>
+        <p>我会检索表结构、生成 SQL、执行查询，最后给你图表和结论。试试：</p>
+        <div class="chips">
+            <button class="chip" type="button">上个月哪个品类销售额最高？</button>
+            <button class="chip" type="button">最近 30 天每天的销售额趋势</button>
+            <button class="chip" type="button">各城市订单量 Top5</button>
+            <button class="chip" type="button">上个月各品类销售额占比</button>
+        </div>
+    </div>
+</main>
+
+<footer class="composer">
+    <div class="composer-inner">
+        <input id="questionInput" type="text" placeholder="例如：上个月哪个品类销售额最高？"
+               autocomplete="off" maxlength="500">
+        <button id="sendBtn" class="btn-primary" type="button">发送</button>
+    </div>
+</footer>
+
+<script src="js/echarts.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

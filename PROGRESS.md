@@ -51,7 +51,17 @@
   增量协议实现以兼容两种形状）；POST /api/chat/stream（SseEmitter + 虚拟线程），
   事件序列 meta → delta*n → tool/step*n → done，客户端断开不影响落库；
   同步 /api/chat 保留（脚本/评测用）。端到端验证：首问 + 携带 conversationId 追问均正确
-- [ ] render_chart 工具 + 前端页面（聊天框 + ECharts + 执行轨迹面板）
+- [x] 2026-07-03 render_chart 工具 + 前端页面：
+  - render_chart：模型只给数据（chartType/title/categories/series），option 由服务端确定性组装
+    （bar/line/pie，配色与坐标轴规范固定在代码里，色板经过 CVD 校验、固定顺序分配）；
+    校验失败原文回传触发模型修正；AgentResult 新增 chartOption 随 done 事件下发
+  - 出图兜底（guardrail）：qwen-plus 对"排行类问题必须出图"的提示词遵从不稳定，
+    改为收敛前规则检查——结果是 2~50 行"标签+数值"且未出图时注入一次 CHART_REMINDER
+    打断收敛（步骤类型 guardrail 落轨迹），模型对明细清单仍可拒绝出图；实测精确触发
+  - 前端 static/：原生 JS 手写 SSE 解析（fetch+ReadableStream，EventSource 不支持 POST），
+    打字机效果、执行轨迹面板（思考/工具行实时定稿）、ECharts 本地 vendor 渲染、SQL 折叠；
+    无头 Edge 截图验证首页布局与 bar/pie 真实渲染
+  - 顺手修复：收敛轮的最终回答不再重复记为 thought 步骤（轨迹重复 + 前端闪烁）
 - [ ] 全量 docker-compose.yml + 应用镜像多阶段构建，一键部署验证
 - [ ] README（架构图、演示 GIF、快速开始）
 - [ ] 小评测集：统计 SQL 一次成功率 / 自愈后成功率（简历数据来源）

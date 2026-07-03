@@ -78,21 +78,42 @@ public class AgentExecutor {
         List<AgentStep> steps = new ArrayList<>();
         String lastSql = null;
         String lastQueryResult = null;
+        String lastChartOption = null;
         int consecutiveSqlFailures = 0;
+        boolean chartReminderSent = false;
 
         for (int round = 1; round <= props.maxRounds(); round++) {
             log.debug("ReAct 第 {} 轮，消息数 {}", round, messages.size());
             AssistantMessage assistant = streamOneRound(messages, options, round, listener);
 
+            // 模型不再调用工具 => 收敛，文本即最终回答。
+            // 最终回答不记为 thought 步骤：它已存在 AgentResult.answer / trace.answer，
+            // 记了会在轨迹里重复一遍，前端也会闪烁（先挪进轨迹又被 done 恢复）
+            if (!assistant.hasToolCalls()) {
+                // 出图兜底：结果明显可视化却没出图时，打断收敛注入一次提醒（详见 CHART_REMINDER）
+                if (!chartReminderSent && lastChartOption == null && looksChartable(lastQueryResult)) {
+                    chartReminderSent = true;
+                    log.info("查询结果适合可视化但未出图，注入出图提醒");
+                    // 被打断的收敛文本降级为思考步骤，避免在前端/轨迹中丢失
+                    if (assistant.getText() != null && !assistant.getText().isBlank()) {
+                        AgentStep thought = AgentStep.thought(round, assistant.getText());
+                        steps.add(thought);
+                        listener.onStep(thought);
+                    }
+                    AgentStep guardrail = AgentStep.guardrail(round, AgentPrompts.CHART_REMINDER);
+                    steps.add(guardrail);
+                    listener.onStep(guardrail);
+                    messages.add(assistant);
+                    messages.add(new UserMessage(AgentPrompts.CHART_REMINDER));
+                    continue;
+                }
+                return new AgentResult(true, assistant.getText(), lastSql, lastQueryResult, lastChartOption, steps);
+            }
+
             if (assistant.getText() != null && !assistant.getText().isBlank()) {
                 AgentStep thought = AgentStep.thought(round, assistant.getText());
                 steps.add(thought);
                 listener.onStep(thought);
-            }
-
-            // 模型不再调用工具 => 收敛，文本即最终回答
-            if (!assistant.hasToolCalls()) {
-                return new AgentResult(true, assistant.getText(), lastSql, lastQueryResult, steps);
             }
 
             messages.add(assistant);
@@ -117,6 +138,8 @@ public class AgentExecutor {
                         lastSql = extractSql(toolCall.arguments());
                         lastQueryResult = output.content();
                     }
+                } else if ("render_chart".equals(toolCall.name()) && !output.error()) {
+                    lastChartOption = output.content();
                 }
             }
             messages.add(ToolResponseMessage.builder().responses(toolResponses).build());
@@ -125,14 +148,14 @@ public class AgentExecutor {
                 log.warn("execute_sql 连续失败 {} 次，终止", consecutiveSqlFailures);
                 return new AgentResult(false,
                         "查询失败：SQL 连续 " + consecutiveSqlFailures + " 次执行出错，已停止重试。请换个问法或检查数据口径。",
-                        lastSql, lastQueryResult, steps);
+                        lastSql, lastQueryResult, lastChartOption, steps);
             }
         }
 
         log.warn("达到最大轮数 {} 仍未收敛", props.maxRounds());
         return new AgentResult(false,
                 "本次分析超过最大推理轮数（" + props.maxRounds() + "）仍未得出结论，已终止。请把问题拆小后重试。",
-                lastSql, lastQueryResult, steps);
+                lastSql, lastQueryResult, lastChartOption, steps);
     }
 
     /** tool call 聚合的中间态：arguments 可能分片到达，用 StringBuilder 续拼 */
@@ -180,6 +203,39 @@ public class AgentExecutor {
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * 查询结果是否"明显适合出图"：2~50 行，且每行同时有数值列和非数值的标签列
+     * （典型的分类/时间 + 指标形状）。只做粗判，最终是否出图仍由模型决定。
+     */
+    private boolean looksChartable(String queryResultJson) {
+        if (queryResultJson == null) {
+            return false;
+        }
+        try {
+            var root = objectMapper.readTree(queryResultJson);
+            var rows = root.path("rows");
+            int rowCount = root.path("rowCount").asInt(0);
+            if (rowCount < 2 || rowCount > 50 || !rows.isArray() || rows.isEmpty()) {
+                return false;
+            }
+            var first = rows.get(0);
+            boolean hasNumeric = false;
+            boolean hasLabel = false;
+            var fields = first.fields();
+            while (fields.hasNext()) {
+                String v = fields.next().getValue().asText("");
+                if (v.matches("-?\\d+(\\.\\d+)?")) {
+                    hasNumeric = true;
+                } else if (!v.isBlank()) {
+                    hasLabel = true;
+                }
+            }
+            return hasNumeric && hasLabel;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** 从工具入参 JSON 里提取 sql 字段，仅用于结果展示，解析失败不影响主流程 */
