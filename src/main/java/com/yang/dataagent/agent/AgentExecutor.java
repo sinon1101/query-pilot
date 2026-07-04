@@ -191,12 +191,24 @@ public class AgentExecutor {
                             new StringBuilder(nullToEmpty(tc.arguments()))));
                 } else if (!drafts.isEmpty()) {
                     drafts.getLast().arguments().append(nullToEmpty(tc.arguments()));
+                } else {
+                    log.warn("收到无 id 且无前置调用的 tool call 分片，丢弃: name={} args={}",
+                            tc.name(), tc.arguments());
                 }
             }
         }
 
+        // DashScope 偶发丢 arguments 尾部分片，损坏的 JSON 回传会被 400 拒绝并炸掉整个循环，
+        // 必须先修复（缺尾补括号；修不好降级 "{}" 走工具报错自愈）
         List<AssistantMessage.ToolCall> toolCalls = drafts.stream()
-                .map(d -> new AssistantMessage.ToolCall(d.id(), "function", d.name(), d.arguments().toString()))
+                .map(d -> {
+                    String args = ToolCallJsonRepair.repair(d.arguments().toString(), objectMapper);
+                    if (!args.equals(d.arguments().toString())) {
+                        log.warn("tool call 参数非法 JSON，已修复: name={} 原文={} 修复后={}",
+                                d.name(), d.arguments(), args);
+                    }
+                    return new AssistantMessage.ToolCall(d.id(), "function", d.name(), args);
+                })
                 .toList();
         return AssistantMessage.builder().content(text.toString()).toolCalls(toolCalls).build();
     }
