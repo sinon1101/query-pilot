@@ -68,7 +68,8 @@
     （application-docker.yml），DASHSCOPE_API_KEY 从宿主机透传、缺失时 compose 直接报错拒启
   - 与 dev compose 共用容器名/数据卷，开发与部署模式切换数据不丢
   - 实测 `docker compose up -d --build` 后 /api/chat 问答正确
-- [ ] README（架构图、演示 GIF、快速开始）
+- [x] 2026-07-04 README：亮点、mermaid 架构图、评测数据表、快速开始、真实截图（docs/img/）
+  - 演示 GIF 留了 TODO 占位，需要用户自己录（建议 ScreenToGif：提问 → 流式 → 轨迹 → 图表）
 - [x] 2026-07-03 小评测集（简历数据来源）：eval/questions.txt 20 题（单表聚合/多表 join/
   时间窗口/业务口径/排行趋势占比）+ run_eval.py（标准库无依赖，打 /api/chat 从轨迹自动判定）
   - **评测结果：SQL 一次成功率 90%（18/20），自愈后成功率 100%（20/20），任务完成率 100%，
