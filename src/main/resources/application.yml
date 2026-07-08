@@ -14,16 +14,20 @@ spring:
     open-in-view: false
 
   ai:
-    dashscope:
+    openai:
+      # 阿里云百炼「OpenAI 兼容端点」。Spring AI 会自动补 /v1/chat/completions、/v1/embeddings
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
       # 只从环境变量读取，绝不写死进仓库；优先标准名 DASHSCOPE_API_KEY，回退到本机已有的 API-KEY
       api-key: ${DASHSCOPE_API_KEY:${API-KEY:}}
       chat:
         options:
-          model: qwen-plus
+          # qwen3.7-plus：多模态模型（视觉 + tool call），替换额度耗尽的纯文本 qwen-plus。
+          # 一个模型同时支撑 Text-to-SQL 工具调用与图片输入（看板/表格截图）。
+          model: qwen3.7-plus
           temperature: 0.3
       embedding:
         options:
-          model: text-embedding-v4
+          model: text-embedding-v4   # 兼容端点同样提供 text-embedding-v4（1024 维），向量化沿用
 
 # Agent 自定义配置
 agent:
@@ -41,9 +45,13 @@ agent:
   rag:
     redis-host: localhost
     redis-port: 6380
-    top-k: 4              # schema_search 每次返回的文档数
+    top-k: 8              # schema_search 融合后返回的文档数（表/列/取值/口径混合，故比第一版大）
+    dense-k: 20           # 稠密/词法各自的候选池大小，RRF 融合前每路取 top-N
   memory:
     window-size: 20       # 注入模型的历史消息条数上限（10 轮对话），防止上下文无限膨胀
+  reflect:
+    enabled: true         # 收敛前 Critic 语义审校，抓 SQL 能跑通但口径错的静默错误
+    max-reflections: 1    # 单次对话最多打回重做次数（1 次已能覆盖多数语义错，再多性价比低）
 
 logging:
   level:

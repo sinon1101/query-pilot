@@ -10,13 +10,17 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.content.Media;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.MediaType;
+import org.springframework.util.MimeTypeUtils;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -57,8 +61,12 @@ public class ChatController {
         this.traceService = traceService;
     }
 
-    /** conversationId 为空则开新对话，响应带回，追问时携带以延续上下文 */
-    public record ChatRequest(String question, String conversationId) {
+    /**
+     * @param conversationId 为空则开新对话，响应带回，追问时携带以延续上下文
+     * @param image          可选的图片输入（多模态）：data URI（data:image/png;base64,...）或纯 base64，
+     *                       用于"读看板/表格截图"等场景；为空则纯文本问答
+     */
+    public record ChatRequest(String question, String conversationId, String image) {
     }
 
     public record ChatResponse(String conversationId, Long traceId, boolean success,
@@ -77,9 +85,10 @@ public class ChatController {
 
         String conversationId = conversationService.getOrCreate(request.conversationId(), question);
         List<Message> history = conversationService.loadHistory(conversationId);
+        List<Media> media = buildMedia(request.image());
 
         long start = System.currentTimeMillis();
-        AgentResult result = agentExecutor.run(question, history);
+        AgentResult result = agentExecutor.run(question, history, AgentEventListener.NOOP, media);
         long durationMs = System.currentTimeMillis() - start;
 
         conversationService.appendTurn(conversationId, question, result.answer());
@@ -100,8 +109,9 @@ public class ChatController {
                 send(emitter, "meta", Map.of("conversationId", conversationId));
 
                 List<Message> history = conversationService.loadHistory(conversationId);
+                List<Media> media = buildMedia(request.image());
                 long start = System.currentTimeMillis();
-                AgentResult result = agentExecutor.run(question, history, sseListener(emitter));
+                AgentResult result = agentExecutor.run(question, history, sseListener(emitter), media);
                 long durationMs = System.currentTimeMillis() - start;
 
                 // 客户端中途断开也照常落库：记忆与轨迹的完整性不依赖推送成功
@@ -156,6 +166,35 @@ public class ChatController {
             throw new IllegalArgumentException("question 不能为空");
         }
         return request.question().strip();
+    }
+
+    /**
+     * 把请求里的图片字段解析成 Spring AI 的 {@link Media}：接受 data URI
+     * （data:image/png;base64,...，自带 MIME）或纯 base64（默认按 image/png 处理）。
+     * 解析失败直接抛出，让上层按 400/500 返回，不静默吞掉。
+     */
+    private List<Media> buildMedia(String image) {
+        if (image == null || image.isBlank()) {
+            return List.of();
+        }
+        String data = image.trim();
+        String mime = "image/png";
+        if (data.startsWith("data:")) {
+            int comma = data.indexOf(',');
+            if (comma < 0) {
+                throw new IllegalArgumentException("非法的图片 data URI");
+            }
+            String header = data.substring("data:".length(), comma); // e.g. image/png;base64
+            int semi = header.indexOf(';');
+            mime = semi > 0 ? header.substring(0, semi) : header;
+            data = data.substring(comma + 1);
+        }
+        byte[] bytes = Base64.getDecoder().decode(data);
+        Media media = Media.builder()
+                .mimeType(MimeTypeUtils.parseMimeType(mime))
+                .data(new ByteArrayResource(bytes))
+                .build();
+        return List.of(media);
     }
 
     @PreDestroy

@@ -11,9 +11,16 @@
     const sendBtn = document.getElementById('sendBtn');
     const newChatBtn = document.getElementById('newChatBtn');
     const welcome = document.getElementById('welcome');
+    const imageInput = document.getElementById('imageInput');
+    const attachBtn = document.getElementById('attachBtn');
+    const imagePreview = document.getElementById('imagePreview');
+    const imagePreviewImg = document.getElementById('imagePreviewImg');
+    const imageName = document.getElementById('imageName');
+    const imageClearBtn = document.getElementById('imageClearBtn');
 
     let conversationId = null;
     let busy = false;
+    let pendingImage = null; // 待发送图片的 data URI（多模态输入），发出后清空
     const charts = [];
 
     const TOOL_META = {
@@ -45,11 +52,21 @@
 
     // ---------- 消息 DOM ----------
 
-    function addUserMessage(text) {
+    function addUserMessage(text, imageDataUri) {
         const div = document.createElement('div');
         div.className = 'msg msg-user';
         div.innerHTML = '<div class="bubble"></div>';
-        div.querySelector('.bubble').textContent = text;
+        const bubble = div.querySelector('.bubble');
+        if (imageDataUri) {
+            const img = document.createElement('img');
+            img.className = 'bubble-image';
+            img.src = imageDataUri;
+            img.alt = '上传的图片';
+            bubble.appendChild(img);
+        }
+        const p = document.createElement('div');
+        p.textContent = text;
+        bubble.appendChild(p);
         chatArea.appendChild(div);
         scrollToBottom();
     }
@@ -90,7 +107,7 @@
                 stepCount++;
                 const row = document.createElement('div');
                 row.className = 'step-row step-thought';
-                const icon = step.type === 'guardrail' ? '🛡️' : '💭';
+                const icon = step.type === 'guardrail' ? '🛡️' : step.type === 'reflection' ? '🔍' : '💭';
                 row.textContent = icon + ' ' + step.output.trim();
                 traceSteps.appendChild(row);
                 liveText = '';
@@ -228,18 +245,20 @@
     async function send(question) {
         if (busy || !question.trim()) return;
         busy = true;
+        const image = pendingImage;      // 本轮附带的图片，捕获后立即清空预览
+        clearImage();
         input.value = '';
         input.disabled = true;
         sendBtn.disabled = true;
         if (welcome) welcome.style.display = 'none';
 
-        addUserMessage(question);
+        addUserMessage(question, image);
         const card = createAssistantCard();
         const startAt = Date.now();
         let gotDone = false;
 
         try {
-            await streamChat({ question, conversationId }, {
+            await streamChat({ question, conversationId, image }, {
                 meta:  (d) => { conversationId = d.conversationId; },
                 delta: (d) => card.onDelta(d.text),
                 tool:  (d) => card.onToolStart(d),
@@ -261,6 +280,33 @@
         }
     }
 
+    // ---------- 图片上传（多模态输入）----------
+
+    function clearImage() {
+        pendingImage = null;
+        imageInput.value = '';
+        imagePreview.hidden = true;
+        imagePreviewImg.removeAttribute('src');
+        imageName.textContent = '';
+    }
+
+    attachBtn.addEventListener('click', () => imageInput.click());
+    imageClearBtn.addEventListener('click', clearImage);
+    imageInput.addEventListener('change', () => {
+        const file = imageInput.files && imageInput.files[0];
+        if (!file) return;
+        if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return; }
+        if (file.size > 8 * 1024 * 1024) { alert('图片过大（>8MB），请压缩后再传'); clearImage(); return; }
+        const reader = new FileReader();
+        reader.onload = () => {
+            pendingImage = reader.result;      // data:image/...;base64,xxxx
+            imagePreviewImg.src = pendingImage;
+            imageName.textContent = file.name;
+            imagePreview.hidden = false;
+        };
+        reader.readAsDataURL(file);
+    });
+
     sendBtn.addEventListener('click', () => send(input.value));
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.isComposing) send(input.value);
@@ -270,6 +316,7 @@
         charts.forEach(c => c.dispose());
         charts.length = 0;
         chatArea.querySelectorAll('.msg').forEach(m => m.remove());
+        clearImage();
         if (welcome) welcome.style.display = '';
         input.focus();
     });

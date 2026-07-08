@@ -32,8 +32,15 @@
 </main>
 
 <footer class="composer">
+    <div id="imagePreview" class="image-preview" hidden>
+        <img id="imagePreviewImg" alt="待发送图片">
+        <span class="image-preview-name" id="imageName"></span>
+        <button id="imageClearBtn" class="image-clear" type="button" title="移除图片">✕</button>
+    </div>
     <div class="composer-inner">
-        <input id="questionInput" type="text" placeholder="例如：上个月哪个品类销售额最高？"
+        <input id="imageInput" type="file" accept="image/*" hidden>
+        <button id="attachBtn" class="btn-attach" type="button" title="上传图片（看板/表格截图，让模型读图）">📎</button>
+        <input id="questionInput" type="text" placeholder="例如：上个月哪个品类销售额最高？（可点📎附一张图）"
                autocomplete="off" maxlength="500">
         <button id="sendBtn" class="btn-primary" type="button">发送</button>
     </div>
