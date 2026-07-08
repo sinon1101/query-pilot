@@ -21,7 +21,7 @@ class QuestionRouterTest {
                 new AgentProperties.Rag("localhost", 6380, 8, 20),
                 new AgentProperties.Memory(20),
                 new AgentProperties.Reflect(true, 1),
-                new AgentProperties.Router(routerEnabled, 5, 10));
+                new AgentProperties.Router(routerEnabled, 7, 10));
         return new QuestionRouter(props);
     }
 
@@ -62,7 +62,7 @@ class QuestionRouterTest {
         assertThat(d.tier()).isEqualTo(Tier.SIMPLE);
         assertThat(d.reflectEnabled()).isFalse();
         assertThat(d.usesTools()).isTrue();
-        assertThat(d.maxRounds()).isEqualTo(5);
+        assertThat(d.maxRounds()).isEqualTo(7);
         assertThat(d.reason()).contains("模糊维度");
     }
 

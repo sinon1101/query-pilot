@@ -55,7 +55,8 @@ agent:
   # 自适应复杂度路由：进循环前按问题分档，按档位调 maxRounds / 是否反思 / 是否走工具
   router:
     enabled: true             # 关掉即退化回原行为（一律 COMPLEX 档 + 全局 reflect），用于 A/B 对照
-    simple-max-rounds: 5      # 简单计数/明细/模糊维度题：更短更省，且不触发反思（避开 phase-5 过度纠偏坑）
+    simple-max-rounds: 7      # 简单/模糊维度题：不触发反思（避开 phase-5 过度纠偏坑）是主收益；
+                              # 轮数留 7（仍紧于 COMPLEX 10）——一个会出图的简单题需 检索+SQL(可能重试)+出图+收敛≈6 轮，砍太狠会腰斩合法路径
     complex-max-rounds: 10    # 口径敏感题（销售额/GMV/动销/退款率/核销/妥投…）：留足自愈+反思空间
 
 logging:
