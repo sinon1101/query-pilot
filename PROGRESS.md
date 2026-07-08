@@ -79,7 +79,78 @@
     （缺结尾 "}"），损坏 JSON 回传被 InvalidParameter 400 拒绝炸掉整轮 →
     新增 ToolCallJsonRepair 括号平衡修复（修不好降级 "{}" 走工具报错自愈），7 个单测
 
-## 第四阶段（可选）：Text-to-SQL 小模型微调实验
+## 第四阶段：大库化 + schema linking + 反思 ✅ 2026-07-07 完成
+
+> 动机：4 表 demo 太小，普通 RAG 沦为摆设、语义错无从暴露。把库做大做脏，
+> 让 RAG（schema linking）和反思从"装饰"变成"刚需"，且全部能被评测集量化。
+
+- [x] biz 库从 4 表扩到 **19 表**（docker/mysql/init/01-schema.sql + 03-biz-ext-data.sql）：
+  新增交易域（payment/refund/shipment，三表 status 枚举**互不相同**）、营销域（coupon/user_coupon 核销、
+  promotion）、商品域（brand/category/inventory 多仓/warehouse/product_review）、用户域（会员/地址），
+  外加遗留拼音表 t_order_ext（beizhu/youhui_jine/yhq_id）。时间字段故意混用
+  created_at/order_time/gmt_create/pay_time/apply_time/ship_time（真实公司多团队命名不一致）。
+  - 原 4 表语义**不动**，只加 products.brand_id；新数据全部 RAND(seed) 可复现、日期相对 NOW()
+  - 坑：text-embedding-v4 单次 batch 上限 **10**，灌库分批必须 ≤10，否则 400 InvalidParameter
+- [x] **RAG 升级为真 schema linking**（rag/ + tool/SchemaSearchTool）：
+  - 单一数据源 SchemaKnowledge（catalog），生成**多粒度文档**：表摘要 + 列级（列名/类型/注释/外键）
+    + 取值文档（枚举值→字段）+ 口径文档，共 **158 篇**入 Redis
+  - **混合检索** HybridSchemaRetriever：稠密向量（text-embedding-v4）+ 词法（CJK 字符 bigram
+    + ASCII token，IDF 加权，无需中文分词器）双路召回，**RRF 融合**（k=60，只用名次不用异构分数）
+  - **确定性实体链接**：扫描问题中出现的已知枚举值（顺丰→shipment.carrier、金卡→level_name、
+    核销→used），直接锁定字段；结构化输出（命中表渲染完整列 + 取值映射 + 相关口径），不再堆 DDL
+- [x] **反思 / Critic 语义审校**（agent/Critic + AgentExecutor 收敛前接入）：
+  独立 LLM 审"问题+SQL+结果+草稿结论"是否**语义**正确，专抓 SQL 能跑通但口径错的**静默错误**
+  （分品类误用 total_amount、漏有效订单过滤、status 张冠李戴、多地址重复计数），判 revise 打回主循环
+  重做，限 1 次防拉锯；fail-open（审校异常/解析失败一律放行，不误伤、不阻断）。轨迹新增 reflection 步骤类型
+- [x] 评测（eval/questions-v2.txt 20 题，专打新表/脏命名/黑话/Critic 陷阱）：
+  - **v2 结果：SQL 一次成功率 100%（20/20）、任务完成率 100%、出图 11/20、平均 16.9s/题、平均 SQL 1.40 次**
+    （明细 eval/results-20260707-113410.json）
+  - 数值人工核验：品牌销售额 Top5、白牌占比 23.1%、上月各品类动销率 100% 均与手工查库**精确一致**
+  - **反思实测多次真实触发**：顺丰妥投率（修正分母口径）、注册城市≠收货城市
+    （Critic 抓到多地址重复计数 → 按 is_default=1 去重，234 人）——都是语法自愈抓不到的语义错
+  - 原 20 题回归：前 11 题一次成功率 100%（无回归）；**后 9 题因当日百炼免费额度耗尽（403）未跑完**，
+    待额度重置后补跑（原 4 表口径未改，预期无回归）
+
+## 第五阶段：多模态 + 模型切换 + 反思 A/B ✅ 2026-07-07 完成
+
+> 动机：qwen-plus 免费额度耗尽，顺势换多模态模型，让 Agent 输入不再局限于文字；
+> 并用 A/B 量化反思的真实收益（而非只讲故事）。
+
+- [x] **LLM 客户端从百炼原生 starter 换成 Spring AI OpenAI 客户端 + 百炼「OpenAI 兼容端点」**
+  （pom：去 spring-ai-alibaba-starter-dashscope，加 spring-ai-starter-model-openai；
+  application.yml：spring.ai.openai.base-url=…/compatible-mode，model=**qwen3.7-plus**）：
+  - 原因：qwen3.7-plus（多模态）只在兼容端点可用，原生端点 400；且 OpenAI 协议对流式 tool call、
+    图片输入支持更规整，本项目流式聚合本就按 OpenAI 增量协议写，切换后零改动即兼容
+  - chat 与 embedding（text-embedding-v4，1024 维）统一走兼容端点，一个客户端搞定
+  - 坑：迁移中排查过——兼容端点 vs 原生端点对同一模型名接受度不同（qwen3.7-plus 仅前者认）
+- [x] **多模态图片输入端到端打通**（ChatController 加 image 字段 → buildMedia 解析 data URI →
+  AgentExecutor 多模态 UserMessage → qwen3.7-plus 读图）：
+  - 测试 1（纯读图）：喂一张各品类销售额柱状图，准确读出 5 个品类数值 ✓
+  - 测试 2（读图 + 查库对比，多模态 Agent 核心价值）：读图得"手机数码最高489万" → 自动
+    schema_search+execute_sql 查库得实际 44.97 万 → 对比得"品类一致、数值差近10倍"并**自主推断
+    差异原因**（时间范围/口径/数据源）✓。图片只挂首轮 user 消息，后续工具轮沿用同一消息列表
+- [x] **原 20 题回归补跑完**（qwen3.7-plus）：SQL 一次成功率 **90%（18/20）**、自愈后 **100%**、
+  任务完成率 **90%**、平均 **46.3s/题**（明显慢于 qwen-plus 的 ~14s，多模态模型迭代更啰嗦）
+  - 2 例失败（城市Top5、周末工作日）均为**撞满 10 轮未收敛**，非检索错：根因是 **Critic 过度打回**
+    ——把"各城市订单量"用注册城市的合理解法判为"该用收货城市"，带模型进 user_address 兔子洞反复重查
+- [x] **反思开关 A/B 对照**（eval/questions-ab.txt 6 道语义陷阱题，真值全部手工核验；
+  ab-reflect-ON.json / ab-reflect-OFF.json）：
+
+  | 指标 | 反思 ON | 反思 OFF |
+  |---|---|---|
+  | 语义正确率 | 6/6 | 6/6 |
+  | 反思判定 | 6× 通过、0 打回 | （关闭，轨迹实测 0 反思步骤） |
+  | 平均耗时 | 38.5s | 38.6s |
+  | 平均 SQL 尝试 | 1.17 | 1.17 |
+
+  - **核心发现：反思的收益与底座模型强弱成反比**。qwen3.7-plus 强到这些陷阱题**首次即答对**，
+    反思 6 次全"通过"、零打回 → 无正确率增益、成本相当；而在**更弱的 qwen-plus 上反思确有价值**
+    （第四阶段 v2 实测：顺丰分母、多地址去重都靠反思修正）。反之在**模糊维度题上反思会帮倒忙**
+    （上面回归的城市Top5 就是被 Critic 过度纠偏拖到超轮数）
+  - 工程结论：反思做成**可配置开关**（agent.reflect.enabled）是对的；下一步应**收紧 Critic 提示词**，
+    只对高置信口径错（total_amount 误用、漏有效订单过滤）打回，模糊解释题不打回
+
+## 第六阶段（可选）：Text-to-SQL 小模型微调实验
 
 > 前三阶段全部完成且有余力时再启动。本机 GPU 仅 4GB 显存（RTX 3050 Ti Laptop），**不能本地训练**，走云端。
 
@@ -93,5 +164,10 @@
 - 本机百炼 Key 存在用户环境变量 `API-KEY`（非标准名），application.yml 已做回退兼容
   `${DASHSCOPE_API_KEY:${API-KEY:}}`；建议手动补一个标准名变量：
   `setx DASHSCOPE_API_KEY %API-KEY%`（新终端生效）
+- **百炼免费额度会被密集评测打满**：一次跑 40 题（每题多轮 LLM + Critic 审校 + embedding）
+  约 36 次成功对话后触发 **403 Forbidden（当日配额耗尽，非 QPM 限流，冷却无效）**，需次日或充值恢复。
+  跑全量评测建议分批、错开，或临时关 reflect（agent.reflect.enabled=false）省一半调用
+- 反思每题多一次 LLM 调用（收敛前审校）：换来语义正确性，但推理调用量、延迟、配额消耗都上升，
+  简历里要诚实提这个 trade-off
 - 项目成型后把 GitHub 仓库从私有切换为公开（简历需要）
 - gh CLI 安装在 `C:\Program Files\GitHub CLI\gh.exe`，新终端若提示找不到 gh 是 PATH 未刷新
