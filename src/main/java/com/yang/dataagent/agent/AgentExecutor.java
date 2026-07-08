@@ -43,14 +43,17 @@ public class AgentExecutor {
     private final AgentProperties props;
     private final ObjectMapper objectMapper;
     private final Critic critic;
+    private final QuestionRouter router;
 
     public AgentExecutor(ChatModel chatModel, ToolRegistry toolRegistry,
-                         AgentProperties props, ObjectMapper objectMapper, Critic critic) {
+                         AgentProperties props, ObjectMapper objectMapper, Critic critic,
+                         QuestionRouter router) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.props = props;
         this.objectMapper = objectMapper;
         this.critic = critic;
+        this.router = router;
     }
 
     public AgentResult run(String question) {
@@ -73,6 +76,21 @@ public class AgentExecutor {
      *                 图片只挂在首轮 user 消息上，后续工具轮沿用同一消息列表，模型全程可见。
      */
     public AgentResult run(String question, List<Message> history, AgentEventListener listener, List<Media> media) {
+        List<AgentStep> steps = new ArrayList<>();
+
+        // 自适应复杂度路由：进循环前分档，按档位决定是否走工具 / 最大轮数 / 是否反思。
+        // 决策记为 route 步骤（第 0 轮）落 trace，支持回放"为什么这么路由"。
+        RouteDecision decision = router.route(question);
+        log.info("路由分档: {} | {}", decision.tier(), decision.reason());
+        AgentStep routeStep = AgentStep.route(decision.describe());
+        steps.add(routeStep);
+        listener.onStep(routeStep);
+
+        // CHITCHAT 短路：闲聊/元问题不进工具循环、不检索、不反思，一次 LLM 直接作答
+        if (!decision.usesTools()) {
+            return chitchat(question, history, media, listener, steps);
+        }
+
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(AgentPrompts.SYSTEM_PROMPT));
         messages.addAll(history);
@@ -84,7 +102,6 @@ public class AgentExecutor {
                 .internalToolExecutionEnabled(false)
                 .build();
 
-        List<AgentStep> steps = new ArrayList<>();
         String lastSql = null;
         String lastQueryResult = null;
         String lastChartOption = null;
@@ -92,7 +109,7 @@ public class AgentExecutor {
         boolean chartReminderSent = false;
         int reflectionsUsed = 0;
 
-        for (int round = 1; round <= props.maxRounds(); round++) {
+        for (int round = 1; round <= decision.maxRounds(); round++) {
             log.debug("ReAct 第 {} 轮，消息数 {}", round, messages.size());
             AssistantMessage assistant = streamOneRound(messages, options, round, listener);
 
@@ -120,7 +137,7 @@ public class AgentExecutor {
 
                 // 语义审校（Reflexion）：SQL 能跑通不代表口径对。收敛前让独立 Critic 审一遍，
                 // 判 revise 就打回让主循环重做，限次数防止拉锯。只在真跑过 SQL 时审。
-                if (props.reflect().enabled() && reflectionsUsed < props.reflect().maxReflections()
+                if (decision.reflectEnabled() && reflectionsUsed < props.reflect().maxReflections()
                         && lastSql != null && lastQueryResult != null) {
                     reflectionsUsed++;
                     Critic.Critique critique = critic.review(question, lastSql, lastQueryResult, assistant.getText());
@@ -189,10 +206,29 @@ public class AgentExecutor {
             }
         }
 
-        log.warn("达到最大轮数 {} 仍未收敛", props.maxRounds());
+        log.warn("达到最大轮数 {} 仍未收敛", decision.maxRounds());
         return new AgentResult(false,
-                "本次分析超过最大推理轮数（" + props.maxRounds() + "）仍未得出结论，已终止。请把问题拆小后重试。",
+                "本次分析超过最大推理轮数（" + decision.maxRounds() + "）仍未得出结论，已终止。请把问题拆小后重试。",
                 lastSql, lastQueryResult, lastChartOption, steps);
+    }
+
+    /**
+     * CHITCHAT 短路：闲聊/元问题不进工具循环。用 CHITCHAT 提示词做一次不带工具的流式调用
+     * （复用 {@link #streamOneRound} 保持 SSE 打字机一致），文本即最终回答。
+     * 不检索、不反思、不出图，成功收尾（success=true）。
+     */
+    private AgentResult chitchat(String question, List<Message> history, List<Media> media,
+                                 AgentEventListener listener, List<AgentStep> steps) {
+        List<Message> messages = new ArrayList<>();
+        messages.add(new SystemMessage(AgentPrompts.CHITCHAT_SYSTEM_PROMPT));
+        messages.addAll(history);
+        messages.add(buildUserMessage(question, media));
+        // 不带工具：internalToolExecutionEnabled(false) 仅为与主循环一致，此处本就无 toolCallbacks
+        ToolCallingChatOptions options = ToolCallingChatOptions.builder()
+                .internalToolExecutionEnabled(false)
+                .build();
+        AssistantMessage assistant = streamOneRound(messages, options, 1, listener);
+        return new AgentResult(true, assistant.getText(), null, null, null, steps);
     }
 
     /** 带图片则构建多模态 UserMessage（文本 + Media），否则退化为纯文本 */
