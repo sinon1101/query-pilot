@@ -26,7 +26,8 @@ public class VectorStoreConfig {
                 .prefix("schema:")
                 .metadataFields(
                         RedisVectorStore.MetadataField.tag("type"),
-                        RedisVectorStore.MetadataField.tag("name"))
+                        RedisVectorStore.MetadataField.tag("name"),
+                        RedisVectorStore.MetadataField.tag("table"))
                 .initializeSchema(true)
                 .build();
     }
