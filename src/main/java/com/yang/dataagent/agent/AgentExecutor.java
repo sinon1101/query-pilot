@@ -14,6 +14,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.stereotype.Service;
 
@@ -41,13 +42,15 @@ public class AgentExecutor {
     private final ToolRegistry toolRegistry;
     private final AgentProperties props;
     private final ObjectMapper objectMapper;
+    private final Critic critic;
 
     public AgentExecutor(ChatModel chatModel, ToolRegistry toolRegistry,
-                         AgentProperties props, ObjectMapper objectMapper) {
+                         AgentProperties props, ObjectMapper objectMapper, Critic critic) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.props = props;
         this.objectMapper = objectMapper;
+        this.critic = critic;
     }
 
     public AgentResult run(String question) {
@@ -58,16 +61,22 @@ public class AgentExecutor {
         return run(question, history, AgentEventListener.NOOP);
     }
 
+    public AgentResult run(String question, List<Message> history, AgentEventListener listener) {
+        return run(question, history, listener, List.of());
+    }
+
     /**
      * @param history  已截断的历史对话（user/assistant 成对），注入在系统提示词之后、
      *                 本轮问题之前，供模型理解"那第二名呢"这类指代追问
      * @param listener 实时事件回调（文本增量 / 工具执行），SSE 流式输出的数据源
+     * @param media    本轮问题附带的图片（多模态：看板/表格截图等），空则退化为纯文本问答。
+     *                 图片只挂在首轮 user 消息上，后续工具轮沿用同一消息列表，模型全程可见。
      */
-    public AgentResult run(String question, List<Message> history, AgentEventListener listener) {
+    public AgentResult run(String question, List<Message> history, AgentEventListener listener, List<Media> media) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(AgentPrompts.SYSTEM_PROMPT));
         messages.addAll(history);
-        messages.add(new UserMessage(question));
+        messages.add(buildUserMessage(question, media));
 
         // 关键：internalToolExecutionEnabled(false) 让框架只把 tool call 透传出来，由本循环手动执行
         ToolCallingChatOptions options = ToolCallingChatOptions.builder()
@@ -81,6 +90,7 @@ public class AgentExecutor {
         String lastChartOption = null;
         int consecutiveSqlFailures = 0;
         boolean chartReminderSent = false;
+        int reflectionsUsed = 0;
 
         for (int round = 1; round <= props.maxRounds(); round++) {
             log.debug("ReAct 第 {} 轮，消息数 {}", round, messages.size());
@@ -106,6 +116,33 @@ public class AgentExecutor {
                     messages.add(assistant);
                     messages.add(new UserMessage(AgentPrompts.CHART_REMINDER));
                     continue;
+                }
+
+                // 语义审校（Reflexion）：SQL 能跑通不代表口径对。收敛前让独立 Critic 审一遍，
+                // 判 revise 就打回让主循环重做，限次数防止拉锯。只在真跑过 SQL 时审。
+                if (props.reflect().enabled() && reflectionsUsed < props.reflect().maxReflections()
+                        && lastSql != null && lastQueryResult != null) {
+                    reflectionsUsed++;
+                    Critic.Critique critique = critic.review(question, lastSql, lastQueryResult, assistant.getText());
+                    if (!critique.pass()) {
+                        log.info("Critic 判 revise，打回重做: {}", critique.issue());
+                        // 草稿结论降级为思考步骤，避免在轨迹/前端丢失（前端据此清空正文区待重写）
+                        if (assistant.getText() != null && !assistant.getText().isBlank()) {
+                            AgentStep draft = AgentStep.thought(round, assistant.getText());
+                            steps.add(draft);
+                            listener.onStep(draft);
+                        }
+                        AgentStep reflection = AgentStep.reflection(round, "审校打回：" + critique.issue());
+                        steps.add(reflection);
+                        listener.onStep(reflection);
+                        messages.add(assistant);
+                        messages.add(new UserMessage(
+                                AgentPrompts.REFLECTION_REVISE_TEMPLATE.replace("{issue}", critique.issue())));
+                        continue;
+                    }
+                    AgentStep reflection = AgentStep.reflection(round, "审校通过");
+                    steps.add(reflection);
+                    listener.onStep(reflection);
                 }
                 return new AgentResult(true, assistant.getText(), lastSql, lastQueryResult, lastChartOption, steps);
             }
@@ -156,6 +193,14 @@ public class AgentExecutor {
         return new AgentResult(false,
                 "本次分析超过最大推理轮数（" + props.maxRounds() + "）仍未得出结论，已终止。请把问题拆小后重试。",
                 lastSql, lastQueryResult, lastChartOption, steps);
+    }
+
+    /** 带图片则构建多模态 UserMessage（文本 + Media），否则退化为纯文本 */
+    private static UserMessage buildUserMessage(String question, List<Media> media) {
+        if (media == null || media.isEmpty()) {
+            return new UserMessage(question);
+        }
+        return UserMessage.builder().text(question).media(media).build();
     }
 
     /** tool call 聚合的中间态：arguments 可能分片到达，用 StringBuilder 续拼 */
