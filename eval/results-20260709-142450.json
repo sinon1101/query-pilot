@@ -1,0 +1,74 @@
+[
+  {
+    "question": "各品牌销售额排名前五",
+    "success": true,
+    "sql_attempts": 0,
+    "first_try_ok": false,
+    "healed_ok": false,
+    "chart": true,
+    "rounds": 1,
+    "duration_s": 5.5,
+    "sql": null,
+    "answer": ""
+  },
+  {
+    "question": "注册城市和收货城市不一致的用户有多少个？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": false,
+    "rounds": 2,
+    "duration_s": 20.2,
+    "sql": "SELECT COUNT(DISTINCT u.id) AS user_count\nFROM biz.users u\nJOIN biz.user_address ua ON u.id = ua.user_id AND ua.is_default = 1\nWHERE u.city != ua.city",
+    "answer": "**注册城市与收货城市不一致的用户共有 212 个。**\n\n口径说明：以用户的**默认收货地址**所在城市（`user_address.city`，`is_default=1`）与**注册城市**（`users.city`）进行比对，两者不同的用户即为不一致用户。"
+  },
+  {
+    "question": "顺丰快递的妥投率是多少？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": false,
+    "rounds": 3,
+    "duration_s": 34.3,
+    "sql": "SELECT\n  carrier AS 承运商,\n  COUNT(*) AS 总物流数,\n  SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS 妥投数,\n  SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS 拒收数,\n  ROUND(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) / COUNT(*) * 100, 2) AS 妥投率_pct,\n  ROUND(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) / COUNT(*) * 100, 2) AS 拒收率_pct\nFROM biz.shipment\nWHERE carrier = '顺丰'",
+    "answer": "## 顺丰快递妥投率\n\n顺丰快递的**妥投率为 73.33%**。\n\n| 指标 | 数值 |\n|------|------|\n| 总物流单数 | 480 |\n| 妥投数 | 352 |\n| 拒收数 | 6 |\n| **妥投率** | **73.33%** |\n| 拒收率 | 1.25% |\n\n**口径说明：** 妥投率 = 物流状态为\"delivered\"（已签收）的单数 ÷ 总物流单数。剩余约 25.42% 的物流单处于 pending/shipped 等未完结状态，尚未妥投也未被拒收。"
+  },
+  {
+    "question": "上个月哪个品类销售额最高？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": false,
+    "rounds": 3,
+    "duration_s": 28.7,
+    "sql": "SELECT \n  p.category AS 品类,\n  SUM(oi.quantity * oi.unit_price) AS 销售额\nFROM orders o\nJOIN order_items oi ON o.id = oi.order_id\nJOIN products p ON oi.product_id = p.id\nWHERE o.status IN ('paid', 'shipped', 'completed')\n  AND DATE_FORMAT(o.order_time, '%Y-%m') = DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, '%Y-%m')\nGROUP BY p.category\nORDER BY 销售额 DESC\nLIMIT 1",
+    "answer": "**上个月销售额最高的品类是「手机数码」，销售额为 449,693.03 元。**\n\n口径说明：统计范围为上个月（按 `order_time` 筛选），仅计入有效订单（状态为 paid/shipped/completed），销售额按订单明细 `quantity × unit_price` 汇总计算。"
+  },
+  {
+    "question": "白牌（无品牌）商品的销售额占比是多少？",
+    "success": false,
+    "sql_attempts": 0,
+    "first_try_ok": false,
+    "healed_ok": false,
+    "chart": false,
+    "rounds": 0,
+    "duration_s": 8.9,
+    "sql": null,
+    "answer": "[请求异常] HTTP Error 500: "
+  },
+  {
+    "question": "上个月各品类的动销率",
+    "success": false,
+    "sql_attempts": 0,
+    "first_try_ok": false,
+    "healed_ok": false,
+    "chart": false,
+    "rounds": 0,
+    "duration_s": 0.1,
+    "sql": null,
+    "answer": "[请求异常] HTTP Error 500: "
+  }
+]
