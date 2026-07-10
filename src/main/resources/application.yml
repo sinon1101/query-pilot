@@ -21,9 +21,9 @@ spring:
       api-key: ${DASHSCOPE_API_KEY:${API-KEY:}}
       chat:
         options:
-          # qwen3.7-plus：多模态模型（视觉 + tool call），替换额度耗尽的纯文本 qwen-plus。
-          # 一个模型同时支撑 Text-to-SQL 工具调用与图片输入（看板/表格截图）。
-          model: qwen3.7-plus
+          # qwen3.6-flash：轻量多模态模型，替换额度耗尽的 qwen3.7-plus。
+          # 兼容端点同样支持 tool call 和图片输入。
+          model: qwen3.6-flash
           temperature: 0.3
       embedding:
         options:
