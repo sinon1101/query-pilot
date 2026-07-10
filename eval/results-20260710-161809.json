@@ -1,0 +1,74 @@
+[
+  {
+    "question": "各品牌销售额排名前五",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": true,
+    "rounds": 4,
+    "duration_s": 21.0,
+    "sql": "SELECT b.brand_name AS 品牌, SUM(oi.quantity * oi.unit_price) AS 销售额 FROM order_items oi JOIN orders o ON oi.order_id = o.id JOIN products p ON oi.product_id = p.id JOIN brand b ON p.brand_id = b.id WHERE o.status IN ('paid', 'shipped', 'completed') GROUP BY b.id, b.brand_name ORDER BY 销售额 DESC LIMIT 5",
+    "answer": "各品牌销售额排名前五如下：\n\n1. **小米**：约 257.79 万元\n2. **华为**：约 163.17 万元\n3. **海尔**：约 85.77 万元\n4. **戴森**：约 84.23 万元\n5. **迪卡侬**：约 70.57 万元\n\n**简要分析**：小米以超 257 万的销售额遥遥领先，是第二名华为（约 163 万）的 1.58 倍；第 3-5 名（海尔、戴森、迪卡侬）销售额较为接近，均在 70-86 万区间。\n\n> 统计口径：仅统计有效订单（状态为 paid/shipped/completed），销售额按 `SUM(数量 × 成交单价)` 计算。"
+  },
+  {
+    "question": "注册城市和收货城市不一致的用户有多少个？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": false,
+    "rounds": 2,
+    "duration_s": 3.6,
+    "sql": "SELECT COUNT(DISTINCT ua.user_id) AS cnt FROM user_address ua JOIN users u ON ua.user_id = u.id WHERE ua.city != u.city",
+    "answer": "注册城市和收货城市不一致的用户有 **274** 个。"
+  },
+  {
+    "question": "顺丰快递的妥投率是多少？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": false,
+    "rounds": 3,
+    "duration_s": 14.9,
+    "sql": "SELECT COUNT(CASE WHEN status = 'delivered' THEN 1 END) * 100.0 / COUNT(*) AS 妥投率 FROM shipment WHERE carrier = '顺丰'",
+    "answer": "顺丰快递的妥投率约为 **73.33%**。\n\n**口径说明：** 基于物流发货表（`shipment`），计算承运商为“顺丰”且状态为“妥投（delivered）”的订单数占已发货顺丰订单总数的比例。"
+  },
+  {
+    "question": "上个月哪个品类销售额最高？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": false,
+    "rounds": 3,
+    "duration_s": 17.0,
+    "sql": "SELECT \n    p.category,\n    SUM(oi.quantity * oi.unit_price) AS sales_amount\nFROM orders o\nJOIN order_items oi ON o.id = oi.order_id\nJOIN products p ON oi.product_id = p.id\nWHERE o.status IN ('paid', 'shipped', 'completed')\n  AND DATE_FORMAT(o.order_time, '%Y-%m') = DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, '%Y-%m')\nGROUP BY p.category\nORDER BY sales_amount DESC\nLIMIT 1",
+    "answer": "上个月销售额最高的品类是**手机数码**，销售额为 **449,693.03 元**。"
+  },
+  {
+    "question": "白牌（无品牌）商品的销售额占比是多少？",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": true,
+    "rounds": 4,
+    "duration_s": 13.2,
+    "sql": "WITH sales AS (SELECT CASE WHEN p.brand_id IS NULL THEN '白牌' ELSE '有品牌' END AS brand_type, SUM(oi.quantity * oi.unit_price) AS amt FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id WHERE o.status IN ('paid', 'shipped', 'completed') GROUP BY brand_type) SELECT brand_type, amt, ROUND(amt / SUM(amt) OVER() * 100, 2) AS pct FROM sales",
+    "answer": "白牌（无品牌）商品销售额占比为 **23.10%**，有品牌商品占比为 76.90%。\n\n口径说明：仅统计有效订单（状态为 paid/shipped/completed），按 `order_items` 明细的 `quantity * unit_price` 汇总计算；其中 `products.brand_id IS NULL` 判定为白牌/无品牌商品。"
+  },
+  {
+    "question": "上个月各品类的动销率",
+    "success": true,
+    "sql_attempts": 1,
+    "first_try_ok": true,
+    "healed_ok": true,
+    "chart": true,
+    "rounds": 4,
+    "duration_s": 20.9,
+    "sql": "WITH sold AS (SELECT p.category, COUNT(DISTINCT oi.product_id) AS sold_count FROM order_items oi JOIN orders o ON oi.order_id = o.id JOIN products p ON oi.product_id = p.id WHERE o.status IN ('paid', 'shipped', 'completed') AND DATE_FORMAT(o.order_time, '%Y-%m') = DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, '%Y-%m') GROUP BY p.category), total AS (SELECT category, COUNT(*) AS total_count FROM products GROUP BY category) SELECT t.category, COALESCE(s.sold_count, 0) AS sold_count, t.total_count, ROUND(COALESCE(s.sold_count, 0) / NULLIF(t.total_count, 0) * 100, 2) AS sell_through_rate FROM total t LEFT JOIN sold s ON t.category = s.category ORDER BY sell_through_rate DESC",
+    "answer": "上个月各品类动销率均为 **100%**。\n\n**数据详情：**\n*   图书文教、家居家装、家用电器、手机数码、服饰鞋包、美妆个护、运动户外、食品生鲜：动销率均为 100%（即该统计期内，这 8 个品类下所有商品均有产生有效销售记录）。\n\n**口径说明：**\n动销率 = 统计期内有销售记录的商品数 / 商品总数。仅统计订单状态为 `paid`（已支付）、`shipped`（已发货）或 `completed`（已完成）的有效订单。"
+  }
+]
