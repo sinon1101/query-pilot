@@ -229,6 +229,32 @@
     多模态图片输入能力保留（冒烟已验 tool call 全链路）。唯一硬骨头是多维分组趋势题，留作后续优化
     （明细 eval/results-20260710-161021.json / results-20260710-161638.json / results-20260710-161809.json）
 
+## 文档校准（2026-08-30）
+
+- [x] 重构 `docs/INTERVIEW_GUIDE.md`：改为项目详细事实文档，统一当前配置与历史评测的口径，
+  删除重复、口号式和证据不足的绝对表述，补充 Schema Linking 专项评测、SQL 安全边界、
+  Critic 同模型相关性、SSE 无自动重连、Memory/Trace 权限与生产化清单。
+- [x] 重写 `docs/面试准备.private.md`：旧版 4 表 / 8 文档 / topK=4 / qwen-plus 内容不再沿用，
+  新版按“事实卡片 + 60 秒/3 分钟介绍 + 39 个高频问答 + 3 个 STAR 故事 + 临场禁区”组织。
+- [x] 从 `eval/results-20260710-*.json` 重新汇总确认历史基线：qwen3.6-flash 共 46 题，
+  46 题均执行 SQL 且首条 SQL 无执行错误，45/46 正常收敛，平均 15.8s/题；唯一失败题首条 SQL
+  可执行，但 10 轮内未收敛，因此再次确认“SQL 执行成功率 / 任务完成率 / 语义准确率”必须分开。
+- [x] 文档重构后执行 `mvn test`：44 个测试通过，1 个需显式开启的 DashScope 冒烟测试跳过，构建成功。
+- [ ] 当前 `application.yml` 已配置 `qwen3.7-flash`，但尚无该模型的完整 46 题结果；后续若在简历引用
+  当前模型成绩，需要固定配置和 Git commit 后重跑，不能直接复用 qwen3.6-flash 历史指标。
+
+## 品牌与项目主页（2026-08-31）
+
+- [x] GitHub 仓库从 `sinon1101/data-analysis-agent` 重命名为 `sinon1101/query-pilot`，本地 `origin`
+  已同步到新地址；GitHub 旧地址保留重定向。
+- [x] README 全面重构为 QueryPilot 项目主页：补充核心能力、系统架构、请求链路、关键设计、
+  46 题历史评测及指标定义、快速启动、接口配置、安全边界与路线图；清理旧模型、旧 20 题指标、
+  “隐藏推理落库”和 SSE 自动重连等过时或不严谨表述。
+- [x] README 相对路径、代码围栏与 Markdown 结构检查通过；`mvn test` 44 个测试通过，
+  1 个需显式开启的 DashScope 冒烟测试跳过，构建成功。
+- [x] 经用户确认，已将 Router、模型/评测与 README 共 6 个本地提交推送到 `origin/master`；
+  GitHub 项目主页现已与当前已提交功能保持一致。
+
 ## 第七阶段（可选）：Text-to-SQL 小模型微调实验
 
 > 前三阶段全部完成且有余力时再启动。本机 GPU 仅 4GB 显存（RTX 3050 Ti Laptop），**不能本地训练**，走云端。
