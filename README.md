@@ -1,125 +1,346 @@
-# DataAgent —— 智能数据分析 Agent
+# QueryPilot
 
-用自然语言（或**带一张图**）问数据问题（如"顺丰快递的妥投率是多少？"），Agent 对一个 **19 表的准真实电商库**
-做 schema linking、生成 SQL、执行查询、**语法出错自我修正 + 语义反思复核**，最后给出 ECharts 图表
-和有数字支撑的结论。基于**多模态模型 qwen3.7-plus**，还能读懂上传的看板/表格截图并结合库里数据对账。
-全程 SSE 流式输出，每步推理可回放。
+> 面向电商场景的智能数据分析 Agent：理解自然语言或看板截图，完成 Schema Linking、安全 Text-to-SQL、错误自愈、语义审校与 ECharts 可视化。
 
-> **手写 ReAct 循环**（不依赖框架的自动工具执行）：消息管理、流式 tool call 增量聚合与修复、
-> 轮数控制、错误自愈、出图兜底、收敛前语义反思、多模态图片输入，全部自己实现——这是本项目的核心。
+QueryPilot 不是一次性的“问题 → SQL”封装，而是一条可控制、可观测、可评测的多轮数据分析链路。项目使用 Java 21、Spring Boot 3.5 和 Spring AI 接入阿里云百炼 OpenAI 兼容端点，在 19 张刻意包含多义字段、命名不一致和遗留命名的电商表上验证 Agent 的选表、写 SQL、纠错与收敛能力。
 
-![首页](docs/img/home.png)
+![QueryPilot 首页](docs/img/home.png)
 
-<!-- TODO: 录制演示 GIF（提问 → 打字机流式 → 轨迹面板展开 → 图表渲染）放这里 -->
-
-| 占比（pie） | 排行（bar） |
+| 销售额占比 | 品类排行 |
 |---|---|
-| ![饼图](docs/img/chart-pie.png) | ![柱图](docs/img/chart-bar.png) |
+| ![饼图](docs/img/chart-pie.png) | ![柱状图](docs/img/chart-bar.png) |
 
-## 评测结果
+## 目录
 
-面向 19 表大库的自建评测集 [eval/questions-v2.txt](eval/questions-v2.txt)（20 题，专打一词多义
-`status`、命名不一致的时间字段、实体链接、遗留拼音表、语义口径陷阱）：
+- [核心能力](#核心能力)
+- [系统架构](#系统架构)
+- [一次请求如何执行](#一次请求如何执行)
+- [关键设计](#关键设计)
+- [评测与结果](#评测与结果)
+- [快速开始](#快速开始)
+- [接口与配置](#接口与配置)
+- [项目结构](#项目结构)
+- [安全边界](#安全边界)
+- [后续计划](#后续计划)
 
-| 指标 | 结果 |
+## 核心能力
+
+| 能力 | 实现 |
 |---|---|
-| SQL 一次成功率 | **100%**（20/20） |
-| 任务完成率 | **100%**（20/20） |
-| 平均耗时 | 16.9s / 题 |
-| 平均 SQL 尝试 | 1.40 次 |
+| 显式 Agent 编排 | 自主实现 ReAct 风格工具循环，管理消息、流式 Tool Call、工具分发、重试与终止 |
+| Schema Linking | 158 篇表/列/取值/口径文档，稠密召回与词法召回经 RRF 融合，并补充确定性实体链接 |
+| SQL 自愈 | 将数据库错误作为工具结果回填模型，连续失败达到阈值后终止 |
+| 语义审校 | Critic 在收敛前检查问题、SQL、结果和草稿，处理 SQL 可执行但业务口径错误的静默问题 |
+| 自适应路由 | 将问题分为 CHITCHAT、SIMPLE、COMPLEX，动态控制是否调用工具、最大轮数与是否审校 |
+| SQL 安全 | 只读语句校验、数据库只读账号、10 秒超时与 200 行返回上限 |
+| 稳定可视化 | 模型只提供图表数据和意图，服务端校验并确定性组装 ECharts Option |
+| 流式与可观测 | SSE 推送文本增量和执行步骤；对话记忆与完整工具轨迹持久化 |
+| 多模态输入 | 支持上传看板或表格截图，并结合业务库数据继续分析 |
 
-数值经手工查库核验（品牌销售额 Top5、白牌占比 23.1%、各品类动销率等）与库精确一致。
-
-**自愈 vs 反思，抓的是两类错**：
-- *语法自愈*：模型误用不存在的 `o.created_at` 列 → 数据库报错原文回传 → 自行改用 `order_time` 重试成功。
-- *语义反思*：问"注册城市≠收货城市的用户数"，模型初版漏了"一个用户多个收货地址"导致重复计数 →
-  收敛前 Critic 审校打回 → 改为只关联默认地址（`is_default=1`）去重，结果修正。这类错 **SQL 能跑通、不报错**，
-  只有语义审校能抓。
-
-## 架构
+## 系统架构
 
 ```mermaid
 flowchart LR
-    U[浏览器<br>原生 JS + ECharts] -- "SSE 流式" --> C[ChatController]
-    C --> E[AgentExecutor<br>手写 ReAct 循环]
-    E -- "stream + tool call 聚合修复" --> LLM[百炼 qwen-plus]
-    E --> T1[schema_search<br>混合检索 + 实体链接]
-    E --> T2[execute_sql]
-    E --> T3[render_chart]
-    E -- "收敛前语义审校" --> CR[Critic<br>反思]
-    T1 --> R[(Redis Stack<br>158 篇多粒度文档)]
-    T2 --> M[(MySQL biz 库<br>19 表 · 只读账号)]
-    E --> TR[trace 轨迹落库]
-    C --> MEM[对话记忆<br>窗口截断]
-    TR & MEM --> M2[(MySQL dataagent 库)]
+    UI[Web UI<br/>Vanilla JS + ECharts]
+    API[ChatController<br/>JSON / SSE]
+    ROUTER[QuestionRouter<br/>CHITCHAT / SIMPLE / COMPLEX]
+    EXEC[AgentExecutor<br/>Explicit Tool Orchestration]
+    LLM[Chat Model<br/>Bailian OpenAI-compatible API]
+    CRITIC[Critic<br/>Semantic Review]
+    SCHEMA[schema_search]
+    SQL[execute_sql]
+    CHART[render_chart]
+    RETRIEVER[HybridSchemaRetriever<br/>Dense + Lexical + RRF]
+    REDIS[(Redis Stack<br/>158 Schema Documents)]
+    BIZ[(MySQL biz<br/>19 Tables / Read-only User)]
+    STORE[(MySQL dataagent<br/>Memory + Trace)]
+
+    UI -->|POST / SSE| API
+    API --> ROUTER
+    ROUTER -->|Tool Query| EXEC
+    ROUTER -->|Chitchat| LLM
+    EXEC <--> LLM
+    EXEC --> SCHEMA
+    EXEC --> SQL
+    EXEC --> CHART
+    EXEC --> CRITIC
+    SCHEMA --> RETRIEVER
+    RETRIEVER --> REDIS
+    SQL --> BIZ
+    API --> STORE
+    EXEC --> STORE
 ```
 
-一轮问答的执行流：
+框架负责模型调用、消息类型、Embedding 和 Redis VectorStore；项目代码负责每轮消息管理、Tool Call 聚合与修复、工具分发、SQL 重试、出图兜底、Critic 打回、路由和 Trace。
 
+## 一次请求如何执行
+
+```text
+用户问题 / 图片
+    ↓
+QuestionRouter：CHITCHAT / SIMPLE / COMPLEX
+    ↓
+模型流式输出文本或 Tool Call
+    ↓
+schema_search → execute_sql →（需要时）render_chart
+    ↑                    ↓
+    └──── 数据库错误回填，模型下一轮修正 SQL
+    ↓
+出图兜底检查 →（COMPLEX）Critic 语义审校
+    ↓
+最终回答 + SQL + 查询结果 + ECharts Option + Steps
+    ↓
+记忆与执行轨迹落库，SSE 推送完成事件
 ```
-用户问题 → [模型流式推理 → 工具调用 → 结果回填] × N 轮 → 语义反思 → 最终回答 + 图表
-              ↑____________ SQL 报错原文回传，触发语法自我修正（最多 3 次）
-              ↑____________ 收敛前规则检查：该出图没出图时注入一次提醒（guardrail）
-              ↑____________ 收敛前 Critic 审校：口径/语义错则打回重做（Reflexion）
+
+终止条件包括：模型正常收敛、SQL 连续失败 3 次，以及 SIMPLE/COMPLEX 达到各自最大轮数。
+
+## 关键设计
+
+### 1. 显式工具编排
+
+`AgentExecutor` 关闭 Spring AI 内部自动工具执行，通过 `internalToolExecutionEnabled(false)` 获取原始 Tool Call，并自行完成：
+
+- System、历史消息和当前问题的组装；
+- 流式文本与 Tool Call arguments 分片聚合；
+- 工具查找、参数传递与结果回填；
+- SQL 连续失败计数和最大轮数控制；
+- 出图提醒与 Critic 打回；
+- 每个可见中间步骤和工具调用的 Trace 记录。
+
+联调中曾观察到兼容端点流式 Tool Call arguments 偶发不完整。`ToolCallJsonRepair` 会对可判断的缺尾 JSON 做保守修复；仍无法修复时降级为普通工具参数错误，复用现有自愈路径，避免协议异常直接中断整个 Agent。
+
+### 2. 从 RAG 到 Schema Linking
+
+`SchemaKnowledge` 是应用侧 Schema 知识目录，生成 158 篇多粒度文档：
+
+| 文档类型 | 数量 | 内容 |
+|---|---:|---|
+| 表 | 19 | 表用途、列摘要和常见问法 |
+| 列 | 116 | 字段类型、语义和关联关系 |
+| 取值 | 11 | “顺丰”“金卡会员”等实体到字段的映射 |
+| 业务口径 | 12 | GMV、客单价、退款率、妥投率等定义 |
+
+检索同时使用两路信号：
+
+- **稠密召回**：`text-embedding-v4 + RedisVectorStore`，处理语义近似；
+- **词法召回**：CJK bigram + ASCII token + IDF，处理字段名、英文枚举和精确实体；
+- **RRF 融合**：两路各取 20 个候选，按排名融合后返回 Top 8；
+- **实体链接**：已知枚举值直接链接字段，例如“顺丰” → `shipment.carrier`。
+
+工具最终最多渲染 6 张相关表的完整字段，并附上取值映射与业务口径，减少模型猜测表名或字段名。
+
+### 3. 显式错误与静默错误分层处理
+
+两类错误使用不同机制：
+
+1. **SQL 执行错误**：MySQL 错误原文作为 Tool Response 回填，模型下一轮重写 SQL；
+2. **业务语义错误**：SQL 可以执行但口径可能错误时，Critic 检查原问题、SQL、查询结果和草稿结论，判定 `revise` 后打回主循环。
+
+Critic 与主 Agent 共用同一底座模型，但采用隔离的提示词和上下文。调用或解析异常时 fail-open，优先保证主流程可用；它是增强审校，不是真值验证器。
+
+### 4. Router 控制反思成本
+
+历史回归中，Critic 能修正硬口径问题，也可能对“城市”等模糊维度过度纠偏。`QuestionRouter` 因此将问题分档：
+
+| 档位 | 工具 | 最大轮数 | Critic |
+|---|---:|---:|---:|
+| CHITCHAT | 否 | 单次模型调用 | 否 |
+| SIMPLE | 是 | 7 | 否 |
+| COMPLEX | 是 | 10 | 是，最多打回 1 次 |
+
+当前使用可解释、可单测的启发式规则，不增加额外 LLM 分类调用。路由理由会作为第 0 轮 Step 写入 Trace。
+
+### 5. SQL 三层只读防线
+
+```text
+SqlGuard：仅允许单条 SELECT/WITH，拒绝注释、多语句和危险关键字
+    ↓
+MySQL：独立 agent_ro 账号，仅拥有 biz 库 SELECT 权限
+    ↓
+JdbcTemplate：10 秒查询超时，最多向模型返回 200 行
 ```
 
-## 核心设计
+这些机制降低写入和上下文膨胀风险，但正则校验不是完整 SQL Parser，200 行限制也不限制数据库扫描量。生产化仍需 AST、表列白名单、`EXPLAIN` 成本门禁、字段脱敏和租户权限。
 
-- **手写 ReAct 循环**：`internalToolExecutionEnabled(false)` 拿到原始 tool call 自行解析分发；
-  三重终止条件（模型收敛 / 最大 10 轮 / SQL 连续失败 3 次）
-- **SSE 流式**：每轮 `chatModel.stream()`，文本增量实时推送（打字机）；tool call 分片按
-  OpenAI 风格增量协议手写聚合，并做**括号平衡修复**（DashScope 偶发丢参数尾部分片，
-  损坏 JSON 回传会被 400 拒绝）
-- **RAG schema linking**（19 表脏库的核心）：单一 catalog 生成**多粒度文档**（表 / 列 / 取值 / 口径，
-  共 158 篇）入 Redis；**混合检索**——稠密向量 + 词法（CJK 字符 bigram + IDF，无需分词器）双路
-  **RRF 融合**；**确定性实体链接**把问题里的枚举值（顺丰→`shipment.carrier`、核销→`used`）直接锁到字段，
-  结构化输出命中表的完整列 + 取值映射 + 口径，专克一词多义 `status`、命名不一致的时间字段
-- **语义反思（Reflexion）**：收敛前独立 Critic 审"问题+SQL+结果+草稿"是否口径正确，
-  专抓 SQL 跑得通但语义错的**静默错误**（分品类误用 `total_amount`、漏有效订单过滤、多地址重复计数），
-  判 revise 打回主循环重做（限 1 次防拉锯，fail-open 不误伤正确结果）。做成可配置开关
-  `agent.reflect.enabled`——[A/B 实测](eval/questions-ab.txt)表明其收益与底座模型强弱成反比
-- **多模态输入**：`/api/chat` 接受可选 `image`（data URI），构建带 `Media` 的多模态 UserMessage，
-  qwen3.7-plus 直接读图。可"上传外部看板/表格截图 → 读出数据 → 自动查库对账"（视觉 + Text-to-SQL 工具链）
-- **SQL 三层防线**：语句校验（仅 SELECT/WITH、黑名单、禁多语句）→ 数据库只读账号（仅 biz 库
-  SELECT 权限）→ 10s 超时 + 200 行截断；API Key 只读环境变量，不进仓库
-- **出图兜底**：提示词对出图时机遵从不稳定 → 收敛前规则检查，结果是"标签+数值"多行且未出图时
-  注入一次提醒，明细清单类模型仍可拒绝
-- **全链路可观测**：每步思考/工具调用落库（`agent_trace_step`），`GET /api/traces/{id}` 回放；
-  前端执行轨迹面板实时展示
+### 6. 确定性图表与 SSE
+
+模型只提供 `chartType`、标题、分类和 Series 数据；`RenderChartTool` 校验后组装 bar、line 或 pie 的 ECharts Option，避免模型直接生成复杂 Option 带来的格式与样式波动。
+
+前端通过 `fetch + ReadableStream` 消费 POST SSE，展示文本增量、工具调用和执行步骤。当前实现不是 `EventSource`，因此没有自动重连和断点续传。
+
+## 评测与结果
+
+### 数据集
+
+| 数据集 | 题数 | 重点 |
+|---|---:|---|
+| `eval/questions.txt` | 20 | 基础查询、排行、趋势与出图 |
+| `eval/questions-v2.txt` | 20 | 19 表、脏命名、业务黑话与复杂关联 |
+| `eval/questions-ab.txt` | 6 | Critic 语义陷阱 |
+
+### 指标定义
+
+- **SQL 一次成功率**：首个 `execute_sql` 没有执行错误 / 实际执行过 SQL 的题目；
+- **SQL 自愈后成功率**：最终至少存在一次成功 SQL / 实际执行过 SQL 的题目；
+- **任务完成率**：Agent 在轮数与重试限制内返回 `success=true` / 全部题目。
+
+这些指标衡量执行链路，不等同于最终答案的自动语义准确率。结果 JSON 保留 SQL 和答案，当前数值与口径主要通过人工抽查。
+
+### 历史基线
+
+2026-07-10，`qwen3.6-flash`，Router 开启、Critic 按复杂题启用：
+
+| 指标 | 结果 |
+|---|---:|
+| 任务完成率 | **45/46 = 97%** |
+| SQL 一次成功率 | **46/46 = 100%** |
+| 平均耗时 | **15.8 秒/题** |
+
+唯一未完成题的首条 SQL 可以执行，但 Agent 在 10 轮内没有完成多维趋势分析，因此“SQL 可执行”和“任务完成”被分别统计。明细见 `eval/results-20260710-*.json`。
+
+> 当前 `application.yml` 的本地默认模型为 `qwen3.7-flash`，尚未保存同配置下的完整 46 题回归。以上数字只属于注明日期和模型的历史基线。
+
+运行评测：
+
+```bash
+python eval/run_eval.py --questions eval/questions.txt
+python eval/run_eval.py --questions eval/questions-v2.txt
+python eval/run_eval.py --questions eval/questions-ab.txt
+```
 
 ## 快速开始
 
-```bash
-# 需要：Docker、阿里云百炼 API Key（https://bailian.console.aliyun.com/）
-export DASHSCOPE_API_KEY=sk-xxx        # Windows PowerShell: $env:DASHSCOPE_API_KEY="sk-xxx"
+### 环境要求
+
+- Docker Engine + Docker Compose；
+- 或 Java 21 + Maven 3.9（本地开发）；
+- 阿里云百炼 API Key。
+
+### 一键启动
+
+PowerShell：
+
+```powershell
+$env:DASHSCOPE_API_KEY="your-api-key"
 docker compose up -d --build
-# 打开 http://localhost:8080
 ```
 
-样例数据（电商 **19 表**：用户/会员/地址、商品/品牌/品类/库存/评价、订单/明细、支付/退款/物流、
-优惠券/活动，3000 订单）随 MySQL 容器初始化自动灌入，固定随机种子 + 相对当前日期生成，
-"上个月"类问题任何时候都有数据。
+Bash：
 
-本地开发：`docker compose -f docker-compose.dev.yml up -d` 只起 MySQL(3307)/Redis(6380)，应用在 IDE 里跑。
+```bash
+export DASHSCOPE_API_KEY="your-api-key"
+docker compose up -d --build
+```
 
-跑评测：`python eval/run_eval.py --questions eval/questions-v2.txt`（应用启动后）。
+打开 [http://localhost:8080](http://localhost:8080)。MySQL 会初始化 19 张电商表和样例数据；Redis Stack 在启动阶段写入 Schema 向量索引。
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+### 本地开发
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+mvn spring-boot:run
+```
+
+本地端口：应用 `8080`、MySQL `3307`、Redis Stack `6380`。
+
+## 接口与配置
+
+### 核心接口
+
+| Method | Path | 用途 |
+|---|---|---|
+| POST | `/api/chat` | 同步 JSON 对话，评测脚本使用 |
+| POST | `/api/chat/stream` | SSE 流式对话，Web UI 使用 |
+| GET | `/api/traces?conversationId=...` | 查询某个对话的执行轨迹列表 |
+| GET | `/api/traces/{id}` | 回放单次执行的完整步骤 |
+
+同步请求示例：
+
+```bash
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"上个月哪个品类销售额最高？"}'
+```
+
+请求还可以携带 `conversationId` 延续对话，或使用 `image` 传递 data URI/base64 图片。
+
+### 关键配置
+
+| 配置 | 默认值 | 作用 |
+|---|---:|---|
+| `agent.router.simple-max-rounds` | 7 | SIMPLE 最大轮数 |
+| `agent.router.complex-max-rounds` | 10 | COMPLEX 最大轮数 |
+| `agent.sql.max-retries` | 3 | SQL 连续失败终止阈值 |
+| `agent.sql.timeout-seconds` | 10 | JDBC 查询超时 |
+| `agent.sql.max-rows` | 200 | 返回给模型的最大行数 |
+| `agent.rag.dense-k` | 20 | 稠密与词法每路候选数 |
+| `agent.rag.top-k` | 8 | RRF 融合后的文档数 |
+| `agent.memory.window-size` | 20 | 注入模型的历史消息数 |
+| `agent.reflect.max-reflections` | 1 | 单次对话最大打回次数 |
+
+API Key 仅从环境变量读取，不写入仓库。
 
 ## 技术栈
 
-Java 21 · Spring Boot 3.5 · Spring AI（OpenAI 客户端 → 阿里云百炼 OpenAI 兼容端点，
-多模态 **qwen3.7-plus** / text-embedding-v4）· MySQL 8 · Redis Stack（RediSearch 向量检索）·
-原生 JS + ECharts · Docker 多阶段构建
+- Java 21、Spring Boot 3.5、Spring AI 1.1；
+- 阿里云百炼 OpenAI 兼容端点、`text-embedding-v4`；
+- MySQL 8、Spring Data JPA、JdbcTemplate；
+- Redis Stack / RediSearch；
+- 原生 JavaScript、ECharts、SSE；
+- Maven、Docker Compose、多阶段 Docker 构建。
 
 ## 项目结构
 
-```
+```text
 src/main/java/com/yang/dataagent/
-├── agent/    # 手写 ReAct 循环：AgentExecutor、Critic 反思、流式聚合与 JSON 修复、事件监听
-├── tool/     # schema_search（schema linking）/ execute_sql（SqlGuard）/ render_chart
-├── rag/      # SchemaKnowledge catalog、多粒度文档、HybridSchemaRetriever（稠密+词法 RRF）
-├── memory/   # 对话历史持久化 + 窗口截断
-├── trace/    # 执行轨迹落库 + 回放接口
-├── web/      # ChatController（SSE）
-└── config/   # 数据源、向量库、Agent 参数
-eval/         # 原 20 题 + v2 20 题（大库/脏命名/反思）评测集 + 跑批脚本 + 结果
+├── agent/    # AgentExecutor、QuestionRouter、Critic、Tool Call JSON 修复
+├── tool/     # schema_search、execute_sql、render_chart
+├── rag/      # SchemaKnowledge、混合检索、向量索引灌库
+├── memory/   # 对话历史持久化与窗口截断
+├── trace/    # 执行轨迹持久化与回放接口
+├── web/      # 同步对话、SSE 与图片输入
+└── config/   # 数据源、向量库和 Agent 参数
+
+src/main/resources/static/  # 原生 JS + ECharts 页面
+docker/mysql/init/          # 19 表业务库与样例数据
+eval/                       # 46 题评测集、跑批脚本与历史结果
+docs/                       # 截图与项目深度文档
 ```
+
+## 安全边界
+
+当前已经实现：
+
+- API Key 仅从环境变量读取；
+- 业务查询使用独立只读数据源和数据库账号；
+- SQL 白名单开头、危险关键字、多语句和注释检查；
+- 查询超时、结果行数限制与连续失败终止；
+- 模型可见中间输出和工具执行轨迹落库。
+
+仍需生产化补充：
+
+- 用户鉴权、租户隔离、字段权限与敏感信息脱敏；
+- SQL AST、表列 Allowlist、查询成本门禁和数据库资源配额；
+- SSE 重连、事件续传与客户端断开后的任务取消策略；
+- 图片大小、像素、格式白名单与内容安全；
+- Flyway/Liquibase、Secret Manager 和 Trace 留存策略。
+
+## 后续计划
+
+- [ ] 建立 Schema Linking 标注集，报告 Table/Column Recall@K、MRR 与消融实验；
+- [ ] 为评测集补充期望表、列、关键过滤条件和答案断言；
+- [ ] 统计 LLM 调用次数、Token、成本及各阶段 P50/P95 延迟；
+- [ ] 将 SQL 校验升级为 AST + Allowlist + `EXPLAIN` 成本门禁；
+- [ ] 实现 SSE 断线恢复和后台任务状态；
+- [ ] 增加 CI、数据库迁移和服务端图片安全限制。
+
+## 项目地址
+
+[https://github.com/sinon1101/query-pilot](https://github.com/sinon1101/query-pilot)
